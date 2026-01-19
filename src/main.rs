@@ -850,6 +850,10 @@ fn rewrite_onvif_body(body: &str, cfg: &AppConfig) -> String {
     let public_http_no_port = format!("http://{}", cfg.public_host);
     out = out.replace(&upstream_http_no_port, &public_http_no_port);
 
+    let upstream_http_any_port = format!("http://{}:", cfg.upstream_http_host);
+    let public_http_any_port = format!("http://{}:", cfg.public_host);
+    out = out.replace(&upstream_http_any_port, &public_http_any_port);
+
     let upstream_https = format!(
         "https://{}:{}",
         cfg.upstream_https_host, cfg.upstream_https_port
@@ -861,6 +865,10 @@ fn rewrite_onvif_body(body: &str, cfg: &AppConfig) -> String {
     let public_https_no_port = format!("https://{}", cfg.public_host);
     out = out.replace(&upstream_https_no_port, &public_https_no_port);
 
+    let upstream_https_any_port = format!("https://{}:", cfg.upstream_https_host);
+    let public_https_any_port = format!("https://{}:", cfg.public_host);
+    out = out.replace(&upstream_https_any_port, &public_https_any_port);
+
     let upstream_rtsp = format!(
         "rtsp://{}:{}",
         cfg.upstream_rtsp_host, cfg.upstream_rtsp_port
@@ -871,6 +879,10 @@ fn rewrite_onvif_body(body: &str, cfg: &AppConfig) -> String {
     let upstream_rtsp_no_port = format!("rtsp://{}", cfg.upstream_rtsp_host);
     let public_rtsp_no_port = format!("rtsp://{}", cfg.public_host);
     out = out.replace(&upstream_rtsp_no_port, &public_rtsp_no_port);
+
+    let upstream_rtsp_any_port = format!("rtsp://{}:", cfg.upstream_rtsp_host);
+    let public_rtsp_any_port = format!("rtsp://{}:", cfg.public_host);
+    out = out.replace(&upstream_rtsp_any_port, &public_rtsp_any_port);
 
     let upstream_onvif = format!(
         "http://{}:{}",
