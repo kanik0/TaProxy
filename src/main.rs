@@ -37,6 +37,7 @@ struct AppConfig {
     upstream_onvif2_host: String,
     upstream_onvif2_port: u16,
     public_host: String,
+    public_https_port: u16,
     public_http_port: u16,
     public_rtsp_port: u16,
     public_onvif_port: u16,
@@ -90,6 +91,10 @@ impl AppConfig {
             .unwrap_or(1024);
 
         let public_host = env::var("PUBLIC_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let public_https_port = env::var("PUBLIC_HTTPS_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(https_bind_port);
         let public_http_port = env::var("PUBLIC_HTTP_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -130,6 +135,7 @@ impl AppConfig {
             upstream_onvif2_host: upstream_host,
             upstream_onvif2_port,
             public_host,
+            public_https_port,
             public_http_port,
             public_rtsp_port,
             public_onvif_port,
@@ -724,6 +730,13 @@ fn rewrite_onvif_body(body: &str, cfg: &AppConfig) -> String {
     );
     let public_http = format!("http://{}:{}", cfg.public_host, cfg.public_http_port);
     out = out.replace(&upstream_http, &public_http);
+
+    let upstream_https = format!(
+        "https://{}:{}",
+        cfg.upstream_https_host, cfg.upstream_https_port
+    );
+    let public_https = format!("https://{}:{}", cfg.public_host, cfg.public_https_port);
+    out = out.replace(&upstream_https, &public_https);
 
     let upstream_rtsp = format!(
         "rtsp://{}:{}",
