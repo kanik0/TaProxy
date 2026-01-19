@@ -9,6 +9,8 @@ use native_tls::TlsConnector as NativeTlsBuilder;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpListener, TcpStream, UdpSocket},
+    sync::mpsc,
+    time::{self, Duration},
 };
 use tokio_native_tls::TlsConnector as NativeTlsConnector;
 use tokio_rustls::{
@@ -1124,6 +1126,45 @@ fn spawn_udp_proxy(
     cam_rtp: SocketAddr,
     cam_rtcp: SocketAddr,
 ) {
+    let (tx, mut rx) = mpsc::unbounded_channel::<(String, usize)>();
+    let stats_task = tokio::spawn(async move {
+        let mut rtp_in = 0usize;
+        let mut rtp_out = 0usize;
+        let mut rtcp_in = 0usize;
+        let mut rtcp_out = 0usize;
+        let mut ticker = time::interval(Duration::from_secs(2));
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if rtp_in > 0 || rtp_out > 0 || rtcp_in > 0 || rtcp_out > 0 {
+                        println!(
+                            "[DEBUG] RTSP: UDP stats rtp_in={} rtp_out={} rtcp_in={} rtcp_out={}",
+                            rtp_in, rtp_out, rtcp_in, rtcp_out
+                        );
+                        rtp_in = 0;
+                        rtp_out = 0;
+                        rtcp_in = 0;
+                        rtcp_out = 0;
+                    }
+                }
+                msg = rx.recv() => {
+                    let Some((kind, bytes)) = msg else {
+                        break;
+                    };
+                    match kind.as_str() {
+                        "rtp_in" => rtp_in += bytes,
+                        "rtp_out" => rtp_out += bytes,
+                        "rtcp_in" => rtcp_in += bytes,
+                        "rtcp_out" => rtcp_out += bytes,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    });
+
+    let tx_rtp = tx.clone();
+    let tx_rtcp = tx.clone();
     tokio::spawn(async move {
         let mut buf = vec![0u8; 2048];
         loop {
@@ -1131,12 +1172,15 @@ fn spawn_udp_proxy(
                 Ok(v) => v,
                 Err(_) => break,
             };
+            let _ = tx_rtp.send(("rtp_in".to_string(), n));
             let dst = if src.ip() == cam_rtp.ip() {
                 client_rtp
             } else {
                 cam_rtp
             };
-            let _ = rtp.send_to(&buf[..n], dst).await;
+            if rtp.send_to(&buf[..n], dst).await.is_ok() {
+                let _ = tx_rtp.send(("rtp_out".to_string(), n));
+            }
         }
     });
     tokio::spawn(async move {
@@ -1146,13 +1190,20 @@ fn spawn_udp_proxy(
                 Ok(v) => v,
                 Err(_) => break,
             };
+            let _ = tx_rtcp.send(("rtcp_in".to_string(), n));
             let dst = if src.ip() == cam_rtcp.ip() {
                 client_rtcp
             } else {
                 cam_rtcp
             };
-            let _ = rtcp.send_to(&buf[..n], dst).await;
+            if rtcp.send_to(&buf[..n], dst).await.is_ok() {
+                let _ = tx_rtcp.send(("rtcp_out".to_string(), n));
+            }
         }
+    });
+
+    tokio::spawn(async move {
+        let _ = stats_task.await;
     });
 }
 
