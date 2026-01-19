@@ -188,9 +188,28 @@ fn log_body_snippet(cfg: &AppConfig, kind: &str, body: &[u8]) {
         return;
     }
     let text = String::from_utf8_lossy(body);
-    let snippet: String = text.chars().take(240).collect();
+    let snippet: String = text.chars().take(600).collect();
     let sanitized = snippet.replace('\r', "\\r").replace('\n', "\\n");
     println!("[DEBUG] {kind}: body snippet: {sanitized}");
+}
+
+fn log_body_url(cfg: &AppConfig, kind: &str, body: &[u8]) {
+    if !cfg.debug {
+        return;
+    }
+    let text = String::from_utf8_lossy(body);
+    let needles = ["http://", "https://", "rtsp://"];
+    if let Some((idx, needle)) = needles
+        .iter()
+        .filter_map(|n| text.find(n).map(|idx| (idx, *n)))
+        .min_by_key(|(idx, _)| *idx)
+    {
+        let start = idx.saturating_sub(30);
+        let end = (idx + needle.len() + 200).min(text.len());
+        let snippet = &text[start..end];
+        let sanitized = snippet.replace('\r', "\\r").replace('\n', "\\n");
+        println!("[DEBUG] {kind}: url snippet: {sanitized}");
+    }
 }
 
 #[derive(Debug)]
@@ -425,6 +444,7 @@ async fn handle_http_like(
             response.body.len(),
         );
         log_body_snippet(&cfg, kind, &response.body);
+        log_body_url(&cfg, kind, &response.body);
         let mut body = response.body;
         if rewrite {
             let body_text = String::from_utf8_lossy(&body);
