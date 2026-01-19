@@ -278,6 +278,32 @@ fn log_rewrite_check(cfg: &AppConfig, kind: &str, original: &str, rewritten: &st
     }
 }
 
+fn log_onvif_tag_values(cfg: &AppConfig, kind: &str, body: &str) {
+    if !cfg.debug {
+        return;
+    }
+    let tags = [
+        "XAddr",
+        "Address",
+        "SnapshotUri",
+        "Uri",
+        "StreamUri",
+        "MetadataStreamUri",
+        "Rtsp",
+    ];
+    for tag in tags {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        if let (Some(start), Some(end)) = (body.find(&open), body.find(&close)) {
+            if end > start + open.len() {
+                let value = &body[start + open.len()..end];
+                let sanitized = value.replace('\r', "\\r").replace('\n', "\\n");
+                println!("[DEBUG] {kind}: tag {tag} = {sanitized}");
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct HttpMessage {
     start_line: String,
@@ -514,6 +540,7 @@ async fn handle_http_like(
         let mut body = response.body;
         if rewrite {
             let body_text = String::from_utf8_lossy(&body);
+            log_onvif_tag_values(&cfg, kind, &body_text);
             let rewritten = rewrite_onvif_body(&body_text, &cfg);
             log_rewrite_check(
                 &cfg,
