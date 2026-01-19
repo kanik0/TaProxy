@@ -850,7 +850,18 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
     loop {
         handshake_count += 1;
         log_debug(&cfg, "RTSP: reading request headers");
-        let request_buf = read_rtsp_headers(&mut inbound, 16384).await?;
+        let mut first_byte = [0u8; 1];
+        let n = inbound.read(&mut first_byte).await?;
+        if n == 0 {
+            break;
+        }
+        if first_byte[0] == b'$' {
+            log_debug(&cfg, "RTSP: interleaved data detected, switching to piping");
+            outbound.write_all(&first_byte).await?;
+            break;
+        }
+
+        let request_buf = read_rtsp_headers_with_prefix(&mut inbound, 16384, &first_byte).await?;
         let Some(request_buf) = request_buf else {
             break;
         };
@@ -905,7 +916,7 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             inbound.write_all(&rewritten_head).await?;
         }
 
-        if method.eq_ignore_ascii_case("PLAY") || handshake_count >= 5 {
+        if method.eq_ignore_ascii_case("PLAY") || handshake_count >= 20 {
             break;
         }
     }
@@ -1042,8 +1053,13 @@ async fn read_exact_from_stream(stream: &mut TcpStream, len: usize) -> Result<Ve
     Ok(buf)
 }
 
-async fn read_rtsp_headers(stream: &mut TcpStream, max_len: usize) -> Result<Option<Vec<u8>>> {
+async fn read_rtsp_headers_with_prefix(
+    stream: &mut TcpStream,
+    max_len: usize,
+    prefix: &[u8],
+) -> Result<Option<Vec<u8>>> {
     let mut buf = Vec::new();
+    buf.extend_from_slice(prefix);
     loop {
         let mut byte = [0u8; 1];
         let n = stream.read(&mut byte).await?;
@@ -1061,6 +1077,10 @@ async fn read_rtsp_headers(stream: &mut TcpStream, max_len: usize) -> Result<Opt
             return Ok(Some(buf));
         }
     }
+}
+
+async fn read_rtsp_headers(stream: &mut TcpStream, max_len: usize) -> Result<Option<Vec<u8>>> {
+    read_rtsp_headers_with_prefix(stream, max_len, &[]).await
 }
 
 fn split_rtsp_lines(buf: &[u8]) -> Vec<String> {
