@@ -846,28 +846,31 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
                 )
             })?;
 
-    log_debug(&cfg, "RTSP: reading request line");
-    let mut first_line = Vec::new();
+    log_debug(&cfg, "RTSP: reading request headers");
+    let mut request_buf = Vec::new();
     loop {
         let mut buf = [0u8; 1];
         let n = inbound.read(&mut buf).await?;
         if n == 0 {
             break;
         }
-        first_line.push(buf[0]);
-        if first_line.ends_with(b"\r\n") {
+        request_buf.push(buf[0]);
+        if request_buf.ends_with(b"\r\n\r\n") {
             break;
         }
-        if first_line.len() > 4096 {
+        if request_buf.len() > 16384 {
             break;
         }
     }
 
-    if !first_line.is_empty() {
-        let line = String::from_utf8_lossy(&first_line);
+    if let Some(pos) = request_buf.windows(2).position(|w| w == b"\r\n") {
+        let line = String::from_utf8_lossy(&request_buf[..pos]);
         let trimmed = line.trim_end_matches(['\r', '\n']);
         log_debug(&cfg, format!("RTSP: request line: {trimmed}"));
-        outbound.write_all(&first_line).await?;
+    }
+
+    if !request_buf.is_empty() {
+        outbound.write_all(&request_buf).await?;
     }
 
     log_debug(&cfg, "RTSP: reading response line");
