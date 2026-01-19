@@ -29,6 +29,8 @@ cargo build --release
 
 The compiled binary will be available at `target/release/tapofix`.
 
+> **Note**: The binary is named `tapofix` while the repository is named `TaProxy`.
+
 ## Configuration
 
 TaProxy is configured entirely through environment variables:
