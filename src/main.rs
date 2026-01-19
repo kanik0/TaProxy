@@ -907,6 +907,7 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             };
             if method.eq_ignore_ascii_case("DESCRIBE") {
                 log_rtsp_rewrite(&cfg, &rewritten_head, &rewritten_body);
+                log_rtsp_sdp(&cfg, &rewritten_body);
             }
             inbound.write_all(&rewritten_head).await?;
             inbound.write_all(&rewritten_body).await?;
@@ -1069,6 +1070,21 @@ fn log_rtsp_rewrite(cfg: &AppConfig, head: &[u8], body: &[u8]) {
             if line.starts_with("a=control:") {
                 log_debug(cfg, format!("RTSP: SDP control: {line}"));
             }
+        }
+    }
+}
+
+fn log_rtsp_sdp(cfg: &AppConfig, body: &[u8]) {
+    if !cfg.debug {
+        return;
+    }
+    if body.is_empty() {
+        return;
+    }
+    let body_text = String::from_utf8_lossy(body);
+    for line in body_text.lines() {
+        if line.starts_with("m=") || line.starts_with("a=") || line.starts_with("c=") {
+            log_debug(cfg, format!("RTSP: SDP line: {line}"));
         }
     }
 }
