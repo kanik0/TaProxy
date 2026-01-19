@@ -896,7 +896,14 @@ async fn handle_rtsp_client(
                 let udp_pair = bind_udp_pair().await?;
                 let proxy_rtp = udp_pair.0.local_addr()?.port();
                 let proxy_rtcp = udp_pair.1.local_addr()?.port();
+                log_debug(
+                    &cfg,
+                    format!(
+                        "RTSP: UDP setup client ports {client_rtp}-{client_rtcp}, proxy ports {proxy_rtp}-{proxy_rtcp}"
+                    ),
+                );
                 rewrite_rtsp_client_ports(&mut request_lines, proxy_rtp, proxy_rtcp);
+                log_rtsp_transport_line(&cfg, "request rewritten", &request_lines);
                 pending_udp = Some(UdpSetup {
                     client_addr: SocketAddr::new(peer.ip(), client_rtp),
                     client_rtcp,
@@ -905,6 +912,8 @@ async fn handle_rtsp_client(
                     udp_rtp: udp_pair.0,
                     udp_rtcp: udp_pair.1,
                 });
+            } else {
+                log_debug(&cfg, "RTSP: UDP setup missing client_port in request");
             }
         }
 
@@ -931,6 +940,7 @@ async fn handle_rtsp_client(
                     udp_setup.proxy_rtp,
                     udp_setup.proxy_rtcp,
                 );
+                log_rtsp_transport_line(&cfg, "response rewritten", &response_lines);
                 let cam_addr = SocketAddr::new(
                     cfg.upstream_rtsp_host.parse().unwrap_or_else(|_| peer.ip()),
                     server_rtp,
@@ -943,6 +953,22 @@ async fn handle_rtsp_client(
                     cam_addr,
                     SocketAddr::new(cam_addr.ip(), server_rtcp),
                 );
+                log_debug(
+                    &cfg,
+                    format!(
+                        "RTSP: UDP proxy client {}:{} / {}:{} <-> camera {}:{} / {}:{}",
+                        udp_setup.client_addr.ip(),
+                        udp_setup.client_addr.port(),
+                        peer.ip(),
+                        udp_setup.client_rtcp,
+                        cam_addr.ip(),
+                        server_rtp,
+                        cam_addr.ip(),
+                        server_rtcp
+                    ),
+                );
+            } else {
+                log_debug(&cfg, "RTSP: UDP setup missing server_port in response");
             }
         }
         if let Some(len) = content_length {
@@ -1352,6 +1378,17 @@ fn log_rtsp_headers(cfg: &AppConfig, kind: &str, lines: &[String]) {
             || lower.starts_with("content-length:")
         {
             log_debug(cfg, format!("RTSP: {kind} header: {line}"));
+        }
+    }
+}
+
+fn log_rtsp_transport_line(cfg: &AppConfig, kind: &str, lines: &[String]) {
+    if !cfg.debug {
+        return;
+    }
+    for line in lines {
+        if line.to_ascii_lowercase().starts_with("transport:") {
+            log_debug(cfg, format!("RTSP: {kind} transport: {line}"));
         }
     }
 }
