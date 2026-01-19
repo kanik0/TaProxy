@@ -846,60 +846,103 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
                 )
             })?;
 
-    log_debug(&cfg, "RTSP: reading request headers");
-    let mut request_buf = Vec::new();
+    let mut handshake_count = 0usize;
     loop {
-        let mut buf = [0u8; 1];
-        let n = inbound.read(&mut buf).await?;
-        if n == 0 {
+        handshake_count += 1;
+        log_debug(&cfg, "RTSP: reading request headers");
+        let request_buf = read_rtsp_headers(&mut inbound, 16384).await?;
+        let Some(request_buf) = request_buf else {
             break;
-        }
-        request_buf.push(buf[0]);
-        if request_buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-        if request_buf.len() > 16384 {
-            break;
-        }
-    }
+        };
 
-    if let Some(pos) = request_buf.windows(2).position(|w| w == b"\r\n") {
-        let line = String::from_utf8_lossy(&request_buf[..pos]);
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        log_debug(&cfg, format!("RTSP: request line: {trimmed}"));
-    }
-
-    if !request_buf.is_empty() {
+        let request_lines = split_rtsp_lines(&request_buf);
+        if let Some(line) = request_lines.first() {
+            log_debug(&cfg, format!("RTSP: request line: {line}"));
+        }
+        log_rtsp_headers(&cfg, "request", &request_lines);
         outbound.write_all(&request_buf).await?;
-    }
 
-    log_debug(&cfg, "RTSP: reading response line");
-    let mut resp_line = Vec::new();
-    loop {
-        let mut buf = [0u8; 1];
-        let n = outbound.read(&mut buf).await?;
-        if n == 0 {
+        log_debug(&cfg, "RTSP: reading response headers");
+        let response_buf = read_rtsp_headers(&mut outbound, 16384).await?;
+        let Some(response_buf) = response_buf else {
             break;
+        };
+        let response_lines = split_rtsp_lines(&response_buf);
+        if let Some(line) = response_lines.first() {
+            log_debug(&cfg, format!("RTSP: response line: {line}"));
         }
-        resp_line.push(buf[0]);
-        if resp_line.ends_with(b"\r\n") {
-            break;
-        }
-        if resp_line.len() > 4096 {
-            break;
-        }
-    }
+        log_rtsp_headers(&cfg, "response", &response_lines);
+        inbound.write_all(&response_buf).await?;
 
-    if !resp_line.is_empty() {
-        let line = String::from_utf8_lossy(&resp_line);
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        log_debug(&cfg, format!("RTSP: response line: {trimmed}"));
-        inbound.write_all(&resp_line).await?;
+        let method = request_lines
+            .first()
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or_default();
+        if method.eq_ignore_ascii_case("PLAY") || handshake_count >= 5 {
+            break;
+        }
     }
 
     log_debug(&cfg, "RTSP: piping traffic");
     let _ = copy_bidirectional(&mut inbound, &mut outbound).await?;
     Ok(())
+}
+
+async fn read_rtsp_headers(stream: &mut TcpStream, max_len: usize) -> Result<Option<Vec<u8>>> {
+    let mut buf = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        let n = stream.read(&mut byte).await?;
+        if n == 0 {
+            if buf.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(buf));
+        }
+        buf.push(byte[0]);
+        if buf.ends_with(b"\r\n\r\n") {
+            return Ok(Some(buf));
+        }
+        if buf.len() >= max_len {
+            return Ok(Some(buf));
+        }
+    }
+}
+
+fn split_rtsp_lines(buf: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(buf);
+    text.split("\r\n")
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect()
+}
+
+fn log_rtsp_headers(cfg: &AppConfig, kind: &str, lines: &[String]) {
+    if !cfg.debug {
+        return;
+    }
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("authorization:") || lower.starts_with("proxy-authorization:") {
+            log_debug(
+                cfg,
+                format!(
+                    "RTSP: {kind} header: {}: <redacted>",
+                    line.split(':').next().unwrap_or("authorization")
+                ),
+            );
+            continue;
+        }
+        if lower.starts_with("cseq:")
+            || lower.starts_with("session:")
+            || lower.starts_with("transport:")
+            || lower.starts_with("public:")
+            || lower.starts_with("content-base:")
+            || lower.starts_with("content-length:")
+        {
+            log_debug(cfg, format!("RTSP: {kind} header: {line}"));
+        }
+    }
 }
 
 async fn run_http_proxy(cfg: AppConfig) -> Result<()> {
