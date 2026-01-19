@@ -870,6 +870,30 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
         outbound.write_all(&first_line).await?;
     }
 
+    log_debug(&cfg, "RTSP: reading response line");
+    let mut resp_line = Vec::new();
+    loop {
+        let mut buf = [0u8; 1];
+        let n = outbound.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        resp_line.push(buf[0]);
+        if resp_line.ends_with(b"\r\n") {
+            break;
+        }
+        if resp_line.len() > 4096 {
+            break;
+        }
+    }
+
+    if !resp_line.is_empty() {
+        let line = String::from_utf8_lossy(&resp_line);
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        log_debug(&cfg, format!("RTSP: response line: {trimmed}"));
+        inbound.write_all(&resp_line).await?;
+    }
+
     log_debug(&cfg, "RTSP: piping traffic");
     let _ = copy_bidirectional(&mut inbound, &mut outbound).await?;
     Ok(())
