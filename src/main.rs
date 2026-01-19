@@ -198,13 +198,31 @@ fn log_body_url(cfg: &AppConfig, kind: &str, body: &[u8]) {
         return;
     }
     let text = String::from_utf8_lossy(body);
-    let needles = ["http://", "https://", "rtsp://"];
-    if let Some((idx, needle)) = needles
+    let host_needles = [
+        cfg.upstream_https_host.as_str(),
+        cfg.upstream_http_host.as_str(),
+        cfg.upstream_rtsp_host.as_str(),
+    ];
+    if let Some((idx, needle)) = host_needles
         .iter()
         .filter_map(|n| text.find(n).map(|idx| (idx, *n)))
         .min_by_key(|(idx, _)| *idx)
     {
-        let start = idx.saturating_sub(30);
+        let start = idx.saturating_sub(40);
+        let end = (idx + needle.len() + 200).min(text.len());
+        let snippet = &text[start..end];
+        let sanitized = snippet.replace('\r', "\\r").replace('\n', "\\n");
+        println!("[DEBUG] {kind}: host snippet: {sanitized}");
+        return;
+    }
+
+    let scheme_needles = ["http://", "https://", "rtsp://"];
+    if let Some((idx, needle)) = scheme_needles
+        .iter()
+        .filter_map(|n| text.find(n).map(|idx| (idx, *n)))
+        .min_by_key(|(idx, _)| *idx)
+    {
+        let start = idx.saturating_sub(40);
         let end = (idx + needle.len() + 200).min(text.len());
         let snippet = &text[start..end];
         let sanitized = snippet.replace('\r', "\\r").replace('\n', "\\n");
@@ -762,6 +780,10 @@ fn rewrite_onvif_body(body: &str, cfg: &AppConfig) -> String {
     let public_http = format!("http://{}:{}", cfg.public_host, cfg.public_http_port);
     out = out.replace(&upstream_http, &public_http);
 
+    let upstream_http_no_port = format!("http://{}", cfg.upstream_http_host);
+    let public_http_no_port = format!("http://{}", cfg.public_host);
+    out = out.replace(&upstream_http_no_port, &public_http_no_port);
+
     let upstream_https = format!(
         "https://{}:{}",
         cfg.upstream_https_host, cfg.upstream_https_port
@@ -769,12 +791,20 @@ fn rewrite_onvif_body(body: &str, cfg: &AppConfig) -> String {
     let public_https = format!("https://{}:{}", cfg.public_host, cfg.public_https_port);
     out = out.replace(&upstream_https, &public_https);
 
+    let upstream_https_no_port = format!("https://{}", cfg.upstream_https_host);
+    let public_https_no_port = format!("https://{}", cfg.public_host);
+    out = out.replace(&upstream_https_no_port, &public_https_no_port);
+
     let upstream_rtsp = format!(
         "rtsp://{}:{}",
         cfg.upstream_rtsp_host, cfg.upstream_rtsp_port
     );
     let public_rtsp = format!("rtsp://{}:{}", cfg.public_host, cfg.public_rtsp_port);
     out = out.replace(&upstream_rtsp, &public_rtsp);
+
+    let upstream_rtsp_no_port = format!("rtsp://{}", cfg.upstream_rtsp_host);
+    let public_rtsp_no_port = format!("rtsp://{}", cfg.public_host);
+    out = out.replace(&upstream_rtsp_no_port, &public_rtsp_no_port);
 
     let upstream_onvif = format!(
         "http://{}:{}",
