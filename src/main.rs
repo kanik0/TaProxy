@@ -872,12 +872,33 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             log_debug(&cfg, format!("RTSP: response line: {line}"));
         }
         log_rtsp_headers(&cfg, "response", &response_lines);
-        inbound.write_all(&response_buf).await?;
 
         let method = request_lines
             .first()
             .and_then(|line| line.split_whitespace().next())
             .unwrap_or_default();
+
+        let (content_length, has_content_base) = extract_rtsp_response_info(&response_lines);
+        if let Some(len) = content_length {
+            let body = read_exact_from_stream(&mut outbound, len).await?;
+            let (rewritten_head, rewritten_body) = if method.eq_ignore_ascii_case("DESCRIBE") {
+                rewrite_rtsp_describe_response(&response_buf, &body, &cfg)?
+            } else if has_content_base {
+                rewrite_rtsp_headers_only(&response_buf, &cfg)?
+            } else {
+                (response_buf.clone(), body)
+            };
+            inbound.write_all(&rewritten_head).await?;
+            inbound.write_all(&rewritten_body).await?;
+        } else {
+            let rewritten_head = if method.eq_ignore_ascii_case("DESCRIBE") || has_content_base {
+                rewrite_rtsp_headers_only(&response_buf, &cfg)?.0
+            } else {
+                response_buf
+            };
+            inbound.write_all(&rewritten_head).await?;
+        }
+
         if method.eq_ignore_ascii_case("PLAY") || handshake_count >= 5 {
             break;
         }
@@ -886,6 +907,114 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
     log_debug(&cfg, "RTSP: piping traffic");
     let _ = copy_bidirectional(&mut inbound, &mut outbound).await?;
     Ok(())
+}
+
+fn extract_rtsp_response_info(lines: &[String]) -> (Option<usize>, bool) {
+    let mut content_length = None;
+    let mut has_content_base = false;
+    for line in lines {
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("content-length:") {
+            content_length = rest.trim().parse::<usize>().ok();
+        }
+        if lower.starts_with("content-base:") {
+            has_content_base = true;
+        }
+    }
+    (content_length, has_content_base)
+}
+
+fn rewrite_rtsp_headers_only(response_buf: &[u8], cfg: &AppConfig) -> Result<(Vec<u8>, Vec<u8>)> {
+    let text = String::from_utf8_lossy(response_buf);
+    let (head, _) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("invalid RTSP headers"))?;
+    let mut lines = Vec::new();
+    for line in head.split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        if line.to_ascii_lowercase().starts_with("content-base:") {
+            let rewritten = rewrite_rtsp_url(line, cfg);
+            lines.push(rewritten);
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    let mut out = String::new();
+    out.push_str(&lines.join("\r\n"));
+    out.push_str("\r\n\r\n");
+    Ok((out.into_bytes(), Vec::new()))
+}
+
+fn rewrite_rtsp_describe_response(
+    response_buf: &[u8],
+    body: &[u8],
+    cfg: &AppConfig,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let text = String::from_utf8_lossy(response_buf);
+    let (head, _) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("invalid RTSP headers"))?;
+    let mut lines = Vec::new();
+    for line in head.split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("content-base:") {
+            lines.push(rewrite_rtsp_url(line, cfg));
+        } else if lower.starts_with("content-length:") {
+            let rewritten_body = rewrite_rtsp_body(body, cfg);
+            lines.push(format!("Content-Length: {}", rewritten_body.len()));
+            let mut out = String::new();
+            out.push_str(&lines.join("\r\n"));
+            out.push_str("\r\n\r\n");
+            return Ok((out.into_bytes(), rewritten_body));
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+
+    let rewritten_body = rewrite_rtsp_body(body, cfg);
+    lines.push(format!("Content-Length: {}", rewritten_body.len()));
+    let mut out = String::new();
+    out.push_str(&lines.join("\r\n"));
+    out.push_str("\r\n\r\n");
+    Ok((out.into_bytes(), rewritten_body))
+}
+
+fn rewrite_rtsp_url(line: &str, cfg: &AppConfig) -> String {
+    let upstream = format!(
+        "rtsp://{}:{}",
+        cfg.upstream_rtsp_host, cfg.upstream_rtsp_port
+    );
+    let public = format!("rtsp://{}:{}", cfg.public_host, cfg.public_rtsp_port);
+    let upstream_any_port = format!("rtsp://{}:", cfg.upstream_rtsp_host);
+    let public_any_port = format!("rtsp://{}:", cfg.public_host);
+    line.replace(&upstream, &public)
+        .replace(&upstream_any_port, &public_any_port)
+}
+
+fn rewrite_rtsp_body(body: &[u8], cfg: &AppConfig) -> Vec<u8> {
+    let text = String::from_utf8_lossy(body);
+    let upstream = format!(
+        "rtsp://{}:{}",
+        cfg.upstream_rtsp_host, cfg.upstream_rtsp_port
+    );
+    let public = format!("rtsp://{}:{}", cfg.public_host, cfg.public_rtsp_port);
+    let upstream_any_port = format!("rtsp://{}:", cfg.upstream_rtsp_host);
+    let public_any_port = format!("rtsp://{}:", cfg.public_host);
+    let rewritten = text
+        .replace(&upstream, &public)
+        .replace(&upstream_any_port, &public_any_port);
+    rewritten.into_bytes()
+}
+
+async fn read_exact_from_stream(stream: &mut TcpStream, len: usize) -> Result<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await?;
+    Ok(buf)
 }
 
 async fn read_rtsp_headers(stream: &mut TcpStream, max_len: usize) -> Result<Option<Vec<u8>>> {
