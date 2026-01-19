@@ -38,7 +38,11 @@ cargo run
 
 ## Configuration (Environment Variables)
 
-- `UPSTREAM_HOST` (required): camera IP/hostname the proxy connects to.
+Required:
+- `UPSTREAM_HOST`: camera IP/hostname the proxy connects to.
+- `PUBLIC_HOST`: hostname/IP clients use to reach the proxy.
+
+Optional:
 - `UPSTREAM_HTTPS_PORT` (default `443`): camera HTTPS port.
 - `UPSTREAM_RTSP_PORT` (default `554`): camera RTSP port.
 - `UPSTREAM_ONVIF_PORT` (default `2020`): camera ONVIF device service port.
@@ -53,7 +57,6 @@ cargo run
 - `ONVIF2_LISTEN_PORT` (default `1024`): local ONVIF2 listen port.
 - `ONVIF_EVENT_LISTEN_PORT` (default `1025`): local ONVIF-EVENT listen port.
 
-- `PUBLIC_HOST` (required): hostname/IP clients use to reach the proxy.
 - `PUBLIC_HTTPS_PORT` (default `HTTPS_LISTEN_PORT`): public HTTPS port in rewritten URLs.
 - `PUBLIC_HTTP_PORT` (default `HTTP_LISTEN_PORT`): public HTTP port in rewritten URLs.
 - `PUBLIC_RTSP_PORT` (default `RTSP_LISTEN_PORT`): public RTSP port in rewritten URLs.
