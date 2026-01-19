@@ -145,6 +145,38 @@ fn log_debug(cfg: &AppConfig, msg: impl AsRef<str>) {
     }
 }
 
+fn log_http_summary(
+    cfg: &AppConfig,
+    kind: &str,
+    direction: &str,
+    start: &str,
+    headers: &[String],
+    body_len: usize,
+) {
+    if !cfg.debug {
+        return;
+    }
+    let mut host = None;
+    let mut soap_action = None;
+    let mut content_length = None;
+    for line in headers {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("host:") {
+            host = Some(line.clone());
+        } else if lower.starts_with("soapaction:") {
+            soap_action = Some(line.clone());
+        } else if lower.starts_with("content-length:") {
+            content_length = Some(line.clone());
+        }
+    }
+    let host_line = host.unwrap_or_else(|| "Host: (none)".to_string());
+    let soap_line = soap_action.unwrap_or_else(|| "SOAPAction: (none)".to_string());
+    let len_line = content_length.unwrap_or_else(|| "Content-Length: (none)".to_string());
+    println!(
+        "[DEBUG] {kind}: {direction} {start} | {host_line} | {len_line} | {soap_line} | body={body_len}"
+    );
+}
+
 #[derive(Debug)]
 struct HttpMessage {
     start_line: String,
@@ -349,6 +381,14 @@ async fn handle_http_like(
         let Some(request) = in_reader.read_http_message().await? else {
             break;
         };
+        log_http_summary(
+            &cfg,
+            kind,
+            "request",
+            &request.start_line,
+            &request.header_lines,
+            request.body.len(),
+        );
         let request_bytes = assemble_http_message(
             &request.start_line,
             &request.header_lines,
@@ -360,10 +400,21 @@ async fn handle_http_like(
         let Some(mut response) = out_reader.read_http_message().await? else {
             break;
         };
+        log_http_summary(
+            &cfg,
+            kind,
+            "response",
+            &response.start_line,
+            &response.header_lines,
+            response.body.len(),
+        );
         let mut body = response.body;
         if rewrite {
             let body_text = String::from_utf8_lossy(&body);
             let rewritten = rewrite_onvif_body(&body_text, &cfg);
+            if rewritten.as_bytes() != body.as_slice() {
+                log_debug(&cfg, format!("{kind}: response body rewritten"));
+            }
             body = rewritten.into_bytes();
         }
 
