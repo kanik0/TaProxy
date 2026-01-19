@@ -1,148 +1,91 @@
-# TaProxy
+# Tapo Multi-Protocol Proxy
 
-A multi-protocol proxy server designed for TP-Link Tapo cameras, written in Rust. TaProxy intercepts and rewrites camera traffic to enable remote access and URL rewriting for HTTPS, RTSP, ONVIF, and HTTP protocols.
+A Rust proxy that fronts a TP-Link Tapo camera for Homebridge/HomeKit by forwarding multiple protocols (HTTPS, RTSP, ONVIF, HTTP) from local ports to the camera. It terminates TLS on the front-end, proxies ONVIF/HTTP, rewrites ONVIF URLs to public endpoints, and supports RTSP over TCP or UDP (with UDP relay).
 
 ## Features
 
-- **HTTPS Proxy**: Terminates TLS connections from clients and establishes secure connections to upstream camera servers
-- **RTSP Proxy**: Proxies Real-Time Streaming Protocol traffic for video streaming
-- **ONVIF Proxy**: Handles ONVIF (Open Network Video Interface Forum) protocol communications on multiple ports
-- **HTTP Proxy**: Proxies HTTP traffic with intelligent URL rewriting in responses
-- **URL Rewriting**: Automatically rewrites upstream camera URLs to public-facing endpoints
-- **Self-Signed Certificate Generation**: Generates self-signed TLS certificates on startup
-- **Debug Logging**: Optional debug mode for troubleshooting
+- HTTPS front-end with self-signed certificate, upstream TLS via native-tls.
+- RTSP proxy with URL/SDP rewrites and optional UDP relay.
+- ONVIF, ONVIF2, ONVIF-EVENT, and HTTP proxying with response URL rewriting.
+- Configurable upstream and public endpoints via environment variables.
+- Debug logging for request/response traces and RTSP/UDP stats.
 
-## Installation
+## Requirements
 
-### Prerequisites
+- Rust toolchain (stable) to build/run.
+- Homebridge: set the video codec to `libx264`.
+  - The default `copy` codec can fail to stream in HomeKit for some clients.
+  - Snapshot works without changes, but streaming requires `libx264` in this setup.
 
-- Rust 1.70+ (edition 2024)
-- Cargo package manager
+## Build
 
-### Building from Source
-
-```bash
-git clone https://github.com/kanik0/TaProxy.git
-cd TaProxy
-cargo build --release
+```sh
+cargo build
 ```
 
-The compiled binary will be available at `target/release/tapofix`.
+## Run
 
-> **Note**: The binary is named `tapofix` while the repository is named `TaProxy`.
+There are no CLI arguments. All configuration is done via environment variables.
 
-## Configuration
+```sh
+export UPSTREAM_HOST=10.66.0.201
+export PUBLIC_HOST=10.66.0.123
+export PROXY_DEBUG=1
 
-TaProxy is configured entirely through environment variables:
-
-### Listen Ports
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HTTPS_LISTEN_PORT` | `443` | Port for incoming HTTPS connections |
-| `RTSP_LISTEN_PORT` | `554` | Port for incoming RTSP connections |
-| `ONVIF_LISTEN_PORT` | `2020` | Port for incoming ONVIF connections |
-| `HTTP_LISTEN_PORT` | `8800` | Port for incoming HTTP connections |
-| `ONVIF2_LISTEN_PORT` | `1024` | Port for secondary ONVIF connections |
-
-### Upstream Server Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `UPSTREAM_HOST` | `10.66.0.201` | IP address or hostname of the upstream camera |
-| `UPSTREAM_HTTPS_PORT` | `443` | HTTPS port on the upstream camera |
-| `UPSTREAM_RTSP_PORT` | `554` | RTSP port on the upstream camera |
-| `UPSTREAM_ONVIF_PORT` | `2020` | ONVIF port on the upstream camera |
-| `UPSTREAM_HTTP_PORT` | `8800` | HTTP port on the upstream camera |
-| `UPSTREAM_ONVIF2_PORT` | `1024` | Secondary ONVIF port on the upstream camera |
-
-### Public-Facing Configuration
-
-These settings control how URLs are rewritten in responses:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PUBLIC_HOST` | `127.0.0.1` | Public hostname or IP address |
-| `PUBLIC_HTTP_PORT` | Same as `HTTP_LISTEN_PORT` | Public HTTP port |
-| `PUBLIC_RTSP_PORT` | Same as `RTSP_LISTEN_PORT` | Public RTSP port |
-| `PUBLIC_ONVIF_PORT` | Same as `ONVIF_LISTEN_PORT` | Public ONVIF port |
-| `PUBLIC_ONVIF2_PORT` | Same as `ONVIF2_LISTEN_PORT` | Public secondary ONVIF port |
-
-### Debug Mode
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PROXY_DEBUG` | `false` | Enable debug logging (accepts: `1`, `true`, `yes`, `on`) |
-
-## Usage
-
-### Basic Usage
-
-Run with default settings (proxying to `10.66.0.201`):
-
-```bash
-./target/release/tapofix
+cargo run
 ```
 
-### Custom Configuration
+## Configuration (Environment Variables)
 
-```bash
-UPSTREAM_HOST=192.168.1.100 \
-PUBLIC_HOST=example.com \
-HTTPS_LISTEN_PORT=8443 \
-PROXY_DEBUG=true \
-./target/release/tapofix
-```
+- `UPSTREAM_HOST` (default `10.66.0.201`)
+- `UPSTREAM_HTTPS_PORT` (default `443`)
+- `UPSTREAM_RTSP_PORT` (default `554`)
+- `UPSTREAM_ONVIF_PORT` (default `2020`)
+- `UPSTREAM_HTTP_PORT` (default `8800`)
+- `UPSTREAM_ONVIF2_PORT` (default `1024`)
+- `UPSTREAM_ONVIF_EVENT_PORT` (default `1025`)
 
-### Docker Example (if containerized)
+- `HTTPS_LISTEN_PORT` (default `443`)
+- `RTSP_LISTEN_PORT` (default `554`)
+- `ONVIF_LISTEN_PORT` (default `2020`)
+- `HTTP_LISTEN_PORT` (default `8800`)
+- `ONVIF2_LISTEN_PORT` (default `1024`)
+- `ONVIF_EVENT_LISTEN_PORT` (default `1025`)
 
-```bash
-docker run -d \
-  -e UPSTREAM_HOST=192.168.1.100 \
-  -e PUBLIC_HOST=example.com \
-  -p 443:443 \
-  -p 554:554 \
-  -p 2020:2020 \
-  -p 8800:8800 \
-  -p 1024:1024 \
-  taproxy
-```
+- `PUBLIC_HOST` (default `127.0.0.1`)
+- `PUBLIC_HTTPS_PORT` (default `HTTPS_LISTEN_PORT`)
+- `PUBLIC_HTTP_PORT` (default `HTTP_LISTEN_PORT`)
+- `PUBLIC_RTSP_PORT` (default `RTSP_LISTEN_PORT`)
+- `PUBLIC_ONVIF_PORT` (default `ONVIF_LISTEN_PORT`)
+- `PUBLIC_ONVIF2_PORT` (default `ONVIF2_LISTEN_PORT`)
+- `PUBLIC_ONVIF_EVENT_PORT` (default `ONVIF_EVENT_LISTEN_PORT`)
 
-## How It Works
+- `PROXY_DEBUG` (`1`, `true`, `yes`, `on` to enable verbose logs)
+- `RTSP_FORCE_TCP` (`1`, `true`, `yes`, `on` to force TCP interleaved RTSP)
 
-1. **HTTPS Proxy**: 
-   - Accepts TLS connections from clients using a self-generated certificate
-   - Establishes TLS connections to the upstream camera (accepts invalid certificates)
-   - Bidirectionally copies traffic between client and upstream
+## Logs & Debugging
 
-2. **HTTP Proxy with URL Rewriting**:
-   - Intercepts HTTP requests and forwards them to the upstream camera
-   - Parses HTTP responses and rewrites embedded URLs
-   - Replaces upstream camera URLs with public-facing URLs
-   - Updates `Content-Length` headers after rewriting
+- Normal mode logs basic listener startup and connection errors.
+- Set `PROXY_DEBUG=1` for verbose logs:
+  - HTTP/ONVIF request/response summaries and body snippets.
+  - ONVIF action detection and URL rewrite checks.
+  - RTSP handshake, header/SDP traces, Content-Base rewrites.
+  - UDP relay stats (`rtp_in`, `rtp_out`, `rtcp_in`, `rtcp_out`).
 
-3. **RTSP/ONVIF Proxies**:
-   - Simple TCP proxy that bidirectionally forwards traffic
-   - No packet inspection or modification
+## Notes for Homebridge
 
-## Security Considerations
+- Use the proxy host/ports for all protocols (HTTPS/RTSP/ONVIF/HTTP).
+- Ensure `PUBLIC_HOST` and `PUBLIC_*_PORT` match the address/ports Homebridge can reach.
+- Streaming requirement: set Homebridge video codec to `libx264`.
 
-- The proxy accepts **invalid TLS certificates** from upstream servers (useful for self-signed camera certificates)
-- A **self-signed certificate** is generated on startup for the HTTPS proxy
-- For production use, consider:
-  - Using proper TLS certificates (e.g., Let's Encrypt)
-  - Implementing proper certificate validation
-  - Adding authentication/authorization
-  - Running behind a reverse proxy with proper security headers
+## Troubleshooting
+
+- If snapshots fail, check ONVIF/HTTP rewriting and `PROXY_DEBUG` logs.
+- If RTSP stream does not start, verify:
+  - `PUBLIC_HOST` is reachable from the Homebridge host.
+  - UDP traffic is permitted if `RTSP_FORCE_TCP` is not set.
+  - Homebridge uses `libx264` for video encoding.
 
 ## License
 
-Please check the repository for license information.
-
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.
-
-## Support
-
-For issues, questions, or feature requests, please open an issue on the [GitHub repository](https://github.com/kanik0/TaProxy).
+MIT (see `Cargo.toml` for details).
