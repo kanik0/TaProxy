@@ -38,31 +38,31 @@ cargo run
 
 ## Configuration (Environment Variables)
 
-- `UPSTREAM_HOST` (required)
-- `UPSTREAM_HTTPS_PORT` (default `443`)
-- `UPSTREAM_RTSP_PORT` (default `554`)
-- `UPSTREAM_ONVIF_PORT` (default `2020`)
-- `UPSTREAM_HTTP_PORT` (default `8800`)
-- `UPSTREAM_ONVIF2_PORT` (default `1024`)
-- `UPSTREAM_ONVIF_EVENT_PORT` (default `1025`)
+- `UPSTREAM_HOST` (required): camera IP/hostname the proxy connects to.
+- `UPSTREAM_HTTPS_PORT` (default `443`): camera HTTPS port.
+- `UPSTREAM_RTSP_PORT` (default `554`): camera RTSP port.
+- `UPSTREAM_ONVIF_PORT` (default `2020`): camera ONVIF device service port.
+- `UPSTREAM_HTTP_PORT` (default `8800`): camera HTTP port (if used).
+- `UPSTREAM_ONVIF2_PORT` (default `1024`): camera ONVIF events port.
+- `UPSTREAM_ONVIF_EVENT_PORT` (default `1025`): camera ONVIF event pull port.
 
-- `HTTPS_LISTEN_PORT` (default `443`)
-- `RTSP_LISTEN_PORT` (default `554`)
-- `ONVIF_LISTEN_PORT` (default `2020`)
-- `HTTP_LISTEN_PORT` (default `8800`)
-- `ONVIF2_LISTEN_PORT` (default `1024`)
-- `ONVIF_EVENT_LISTEN_PORT` (default `1025`)
+- `HTTPS_LISTEN_PORT` (default `443`): local HTTPS listen port.
+- `RTSP_LISTEN_PORT` (default `554`): local RTSP listen port.
+- `ONVIF_LISTEN_PORT` (default `2020`): local ONVIF listen port.
+- `HTTP_LISTEN_PORT` (default `8800`): local HTTP listen port.
+- `ONVIF2_LISTEN_PORT` (default `1024`): local ONVIF2 listen port.
+- `ONVIF_EVENT_LISTEN_PORT` (default `1025`): local ONVIF-EVENT listen port.
 
-- `PUBLIC_HOST` (default `127.0.0.1`)
-- `PUBLIC_HTTPS_PORT` (default `HTTPS_LISTEN_PORT`)
-- `PUBLIC_HTTP_PORT` (default `HTTP_LISTEN_PORT`)
-- `PUBLIC_RTSP_PORT` (default `RTSP_LISTEN_PORT`)
-- `PUBLIC_ONVIF_PORT` (default `ONVIF_LISTEN_PORT`)
-- `PUBLIC_ONVIF2_PORT` (default `ONVIF2_LISTEN_PORT`)
-- `PUBLIC_ONVIF_EVENT_PORT` (default `ONVIF_EVENT_LISTEN_PORT`)
+- `PUBLIC_HOST` (required): hostname/IP clients use to reach the proxy.
+- `PUBLIC_HTTPS_PORT` (default `HTTPS_LISTEN_PORT`): public HTTPS port in rewritten URLs.
+- `PUBLIC_HTTP_PORT` (default `HTTP_LISTEN_PORT`): public HTTP port in rewritten URLs.
+- `PUBLIC_RTSP_PORT` (default `RTSP_LISTEN_PORT`): public RTSP port in rewritten URLs.
+- `PUBLIC_ONVIF_PORT` (default `ONVIF_LISTEN_PORT`): public ONVIF port in rewritten URLs.
+- `PUBLIC_ONVIF2_PORT` (default `ONVIF2_LISTEN_PORT`): public ONVIF2 port in rewritten URLs.
+- `PUBLIC_ONVIF_EVENT_PORT` (default `ONVIF_EVENT_LISTEN_PORT`): public ONVIF-EVENT port in rewritten URLs.
 
-- `PROXY_DEBUG` (`1`, `true`, `yes`, `on` to enable verbose logs)
-- `RTSP_FORCE_TCP` (`1`, `true`, `yes`, `on` to force TCP interleaved RTSP)
+- `PROXY_DEBUG` (default `off`): set to `1`, `true`, `yes`, or `on` for verbose logs.
+- `RTSP_FORCE_TCP` (default `off`): set to `1`, `true`, `yes`, or `on` to force RTSP over TCP.
 
 ## Logs & Debugging
 

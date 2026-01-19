@@ -92,7 +92,10 @@ impl AppConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1025);
 
-        let public_host = env::var("PUBLIC_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let public_host = env::var("PUBLIC_HOST")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("PUBLIC_HOST is required"))?;
         let public_https_port = env::var("PUBLIC_HTTPS_PORT")
             .ok()
             .and_then(|v| v.parse().ok())
