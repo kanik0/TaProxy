@@ -183,6 +183,16 @@ fn log_http_summary(
     );
 }
 
+fn log_body_snippet(cfg: &AppConfig, kind: &str, body: &[u8]) {
+    if !cfg.debug {
+        return;
+    }
+    let text = String::from_utf8_lossy(body);
+    let snippet: String = text.chars().take(240).collect();
+    let sanitized = snippet.replace('\r', "\\r").replace('\n', "\\n");
+    println!("[DEBUG] {kind}: body snippet: {sanitized}");
+}
+
 #[derive(Debug)]
 struct HttpMessage {
     start_line: String,
@@ -414,6 +424,7 @@ async fn handle_http_like(
             &response.header_lines,
             response.body.len(),
         );
+        log_body_snippet(&cfg, kind, &response.body);
         let mut body = response.body;
         if rewrite {
             let body_text = String::from_utf8_lossy(&body);
