@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use native_tls::TlsConnector as NativeTlsBuilder;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UdpSocket},
 };
 use tokio_native_tls::TlsConnector as NativeTlsConnector;
 use tokio_rustls::{
@@ -46,6 +46,7 @@ struct AppConfig {
     public_onvif_port: u16,
     public_onvif2_port: u16,
     public_onvif_event_port: u16,
+    rtsp_force_tcp: bool,
     debug: bool,
 }
 
@@ -134,6 +135,12 @@ impl AppConfig {
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(false);
 
+        let rtsp_force_tcp = env::var("RTSP_FORCE_TCP")
+            .ok()
+            .map(|v| v.to_ascii_lowercase())
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+
         Ok(Self {
             https_bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), https_bind_port),
             rtsp_bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), rtsp_bind_port),
@@ -163,6 +170,7 @@ impl AppConfig {
             public_onvif_port,
             public_onvif2_port,
             public_onvif_event_port,
+            rtsp_force_tcp,
             debug,
         })
     }
@@ -821,14 +829,18 @@ async fn run_rtsp_proxy(cfg: AppConfig) -> Result<()> {
         let (socket, peer) = listener.accept().await?;
         let cfg_clone = cfg.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_rtsp_client(cfg_clone, socket).await {
+            if let Err(err) = handle_rtsp_client(cfg_clone, socket, peer).await {
                 eprintln!("[RTSP] client {peer}: {err:?}");
             }
         });
     }
 }
 
-async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()> {
+async fn handle_rtsp_client(
+    cfg: AppConfig,
+    mut inbound: TcpStream,
+    peer: SocketAddr,
+) -> Result<()> {
     log_debug(
         &cfg,
         format!(
@@ -876,8 +888,24 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             .unwrap_or_default()
             .to_string();
 
+        let mut pending_udp: Option<UdpSetup> = None;
         if method.eq_ignore_ascii_case("SETUP") {
-            rewrite_rtsp_transport_to_tcp(&mut request_lines);
+            if cfg.rtsp_force_tcp {
+                rewrite_rtsp_transport_to_tcp(&mut request_lines);
+            } else if let Some((client_rtp, client_rtcp)) = extract_client_ports(&request_lines) {
+                let udp_pair = bind_udp_pair().await?;
+                let proxy_rtp = udp_pair.0.local_addr()?.port();
+                let proxy_rtcp = udp_pair.1.local_addr()?.port();
+                rewrite_rtsp_client_ports(&mut request_lines, proxy_rtp, proxy_rtcp);
+                pending_udp = Some(UdpSetup {
+                    client_addr: SocketAddr::new(peer.ip(), client_rtp),
+                    client_rtcp,
+                    proxy_rtp,
+                    proxy_rtcp,
+                    udp_rtp: udp_pair.0,
+                    udp_rtcp: udp_pair.1,
+                });
+            }
         }
 
         log_rtsp_headers(&cfg, "request", &request_lines);
@@ -889,15 +917,37 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
         let Some(response_buf) = response_buf else {
             break;
         };
-        let response_lines = split_rtsp_lines(&response_buf);
+        let mut response_lines = split_rtsp_lines(&response_buf);
         if let Some(line) = response_lines.first() {
             log_debug(&cfg, format!("RTSP: response line: {line}"));
         }
         log_rtsp_headers(&cfg, "response", &response_lines);
 
         let (content_length, has_content_base) = extract_rtsp_response_info(&response_lines);
+        if let Some(udp_setup) = pending_udp.take() {
+            if let Some((server_rtp, server_rtcp)) = extract_server_ports(&response_lines) {
+                rewrite_rtsp_server_ports(
+                    &mut response_lines,
+                    udp_setup.proxy_rtp,
+                    udp_setup.proxy_rtcp,
+                );
+                let cam_addr = SocketAddr::new(
+                    cfg.upstream_rtsp_host.parse().unwrap_or_else(|_| peer.ip()),
+                    server_rtp,
+                );
+                spawn_udp_proxy(
+                    udp_setup.udp_rtp,
+                    udp_setup.udp_rtcp,
+                    udp_setup.client_addr,
+                    SocketAddr::new(peer.ip(), udp_setup.client_rtcp),
+                    cam_addr,
+                    SocketAddr::new(cam_addr.ip(), server_rtcp),
+                );
+            }
+        }
         if let Some(len) = content_length {
             let body = read_exact_from_stream(&mut outbound, len).await?;
+            let response_buf = join_rtsp_lines(&response_lines);
             let (rewritten_head, rewritten_body) = if method.eq_ignore_ascii_case("DESCRIBE") {
                 rewrite_rtsp_describe_response(&response_buf, &body, &cfg)?
             } else if has_content_base {
@@ -912,6 +962,7 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             inbound.write_all(&rewritten_head).await?;
             inbound.write_all(&rewritten_body).await?;
         } else {
+            let response_buf = join_rtsp_lines(&response_lines);
             let rewritten_head = if method.eq_ignore_ascii_case("DESCRIBE") || has_content_base {
                 rewrite_rtsp_headers_only(&response_buf, &cfg)?.0
             } else {
@@ -950,6 +1001,133 @@ fn join_rtsp_lines(lines: &[String]) -> Vec<u8> {
     out.push_str(&lines.join("\r\n"));
     out.push_str("\r\n\r\n");
     out.into_bytes()
+}
+
+struct UdpSetup {
+    client_addr: SocketAddr,
+    client_rtcp: u16,
+    proxy_rtp: u16,
+    proxy_rtcp: u16,
+    udp_rtp: UdpSocket,
+    udp_rtcp: UdpSocket,
+}
+
+async fn bind_udp_pair() -> Result<(UdpSocket, UdpSocket)> {
+    let rtp = UdpSocket::bind("0.0.0.0:0").await?;
+    let rtcp = UdpSocket::bind("0.0.0.0:0").await?;
+    Ok((rtp, rtcp))
+}
+
+fn extract_client_ports(lines: &[String]) -> Option<(u16, u16)> {
+    for line in lines {
+        if !line.to_ascii_lowercase().starts_with("transport:") {
+            continue;
+        }
+        if let Some((rtp, rtcp)) = parse_port_pair(line, "client_port") {
+            return Some((rtp, rtcp));
+        }
+    }
+    None
+}
+
+fn extract_server_ports(lines: &[String]) -> Option<(u16, u16)> {
+    for line in lines {
+        if !line.to_ascii_lowercase().starts_with("transport:") {
+            continue;
+        }
+        if let Some((rtp, rtcp)) = parse_port_pair(line, "server_port") {
+            return Some((rtp, rtcp));
+        }
+    }
+    None
+}
+
+fn parse_port_pair(line: &str, key: &str) -> Option<(u16, u16)> {
+    let lower = line.to_ascii_lowercase();
+    for part in lower.split(';') {
+        let part = part.trim();
+        let Some(rest) = part.strip_prefix(&format!("{key}=")) else {
+            continue;
+        };
+        let mut iter = rest.split('-');
+        let rtp = iter.next()?.parse().ok()?;
+        let rtcp = iter.next()?.parse().ok()?;
+        return Some((rtp, rtcp));
+    }
+    None
+}
+
+fn rewrite_rtsp_client_ports(lines: &mut [String], rtp: u16, rtcp: u16) {
+    for line in lines.iter_mut() {
+        if !line.to_ascii_lowercase().starts_with("transport:") {
+            continue;
+        }
+        *line = replace_port_pair(line, "client_port", rtp, rtcp);
+    }
+}
+
+fn rewrite_rtsp_server_ports(lines: &mut [String], rtp: u16, rtcp: u16) {
+    for line in lines.iter_mut() {
+        if !line.to_ascii_lowercase().starts_with("transport:") {
+            continue;
+        }
+        *line = replace_port_pair(line, "server_port", rtp, rtcp);
+    }
+}
+
+fn replace_port_pair(line: &str, key: &str, rtp: u16, rtcp: u16) -> String {
+    let mut parts: Vec<String> = line.split(';').map(|s| s.trim().to_string()).collect();
+    let mut replaced = false;
+    for part in parts.iter_mut() {
+        if part.to_ascii_lowercase().starts_with(&format!("{key}=")) {
+            *part = format!("{key}={rtp}-{rtcp}");
+            replaced = true;
+        }
+    }
+    if !replaced {
+        parts.push(format!("{key}={rtp}-{rtcp}"));
+    }
+    parts.join(";")
+}
+
+fn spawn_udp_proxy(
+    rtp: UdpSocket,
+    rtcp: UdpSocket,
+    client_rtp: SocketAddr,
+    client_rtcp: SocketAddr,
+    cam_rtp: SocketAddr,
+    cam_rtcp: SocketAddr,
+) {
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 2048];
+        loop {
+            let (n, src) = match rtp.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let dst = if src.ip() == cam_rtp.ip() {
+                client_rtp
+            } else {
+                cam_rtp
+            };
+            let _ = rtp.send_to(&buf[..n], dst).await;
+        }
+    });
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 2048];
+        loop {
+            let (n, src) = match rtcp.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let dst = if src.ip() == cam_rtcp.ip() {
+                client_rtcp
+            } else {
+                cam_rtcp
+            };
+            let _ = rtcp.send_to(&buf[..n], dst).await;
+        }
+    });
 }
 
 fn extract_rtsp_response_info(lines: &[String]) -> (Option<usize>, bool) {
