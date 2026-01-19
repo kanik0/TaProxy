@@ -856,9 +856,9 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             break;
         }
         if first_byte[0] == b'$' {
-            log_debug(&cfg, "RTSP: interleaved data detected, switching to piping");
-            outbound.write_all(&first_byte).await?;
-            break;
+            log_debug(&cfg, "RTSP: interleaved frame from client");
+            forward_interleaved_frame(&mut inbound, &mut outbound, &first_byte).await?;
+            continue;
         }
 
         let request_buf = read_rtsp_headers_with_prefix(&mut inbound, 16384, &first_byte).await?;
@@ -1123,6 +1123,23 @@ async fn read_rtsp_headers_with_prefix(
 
 async fn read_rtsp_headers(stream: &mut TcpStream, max_len: usize) -> Result<Option<Vec<u8>>> {
     read_rtsp_headers_with_prefix(stream, max_len, &[]).await
+}
+
+async fn forward_interleaved_frame(
+    inbound: &mut TcpStream,
+    outbound: &mut TcpStream,
+    first: &[u8; 1],
+) -> Result<()> {
+    let mut header = [0u8; 3];
+    inbound.read_exact(&mut header).await?;
+    let len = u16::from_be_bytes([header[1], header[2]]) as usize;
+    let mut payload = vec![0u8; len];
+    inbound.read_exact(&mut payload).await?;
+
+    outbound.write_all(first).await?;
+    outbound.write_all(&header).await?;
+    outbound.write_all(&payload).await?;
+    Ok(())
 }
 
 fn split_rtsp_lines(buf: &[u8]) -> Vec<String> {
