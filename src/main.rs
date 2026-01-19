@@ -145,6 +145,240 @@ fn log_debug(cfg: &AppConfig, msg: impl AsRef<str>) {
     }
 }
 
+#[derive(Debug)]
+struct HttpMessage {
+    start_line: String,
+    header_lines: Vec<String>,
+    body: Vec<u8>,
+    chunked: bool,
+}
+
+struct HttpReader<R> {
+    reader: R,
+    buf: Vec<u8>,
+}
+
+impl<R: AsyncReadExt + Unpin> HttpReader<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buf: Vec::new(),
+        }
+    }
+
+    async fn read_line(&mut self) -> Result<Option<Vec<u8>>> {
+        loop {
+            if let Some(pos) = self.buf.iter().position(|b| *b == b'\n') {
+                let mut line = self.buf.drain(..=pos).collect::<Vec<u8>>();
+                if line.last() == Some(&b'\n') {
+                    line.pop();
+                }
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                return Ok(Some(line));
+            }
+
+            let mut tmp = [0u8; 1024];
+            let n = self.reader.read(&mut tmp).await?;
+            if n == 0 {
+                if self.buf.is_empty() {
+                    return Ok(None);
+                }
+                let remaining = self.buf.split_off(0);
+                return Ok(Some(remaining));
+            }
+            self.buf.extend_from_slice(&tmp[..n]);
+        }
+    }
+
+    async fn read_exact_bytes(&mut self, len: usize) -> Result<Vec<u8>> {
+        while self.buf.len() < len {
+            let mut tmp = [0u8; 4096];
+            let n = self.reader.read(&mut tmp).await?;
+            if n == 0 {
+                return Err(anyhow::anyhow!("unexpected EOF while reading body"));
+            }
+            self.buf.extend_from_slice(&tmp[..n]);
+        }
+        let out = self.buf.drain(..len).collect::<Vec<u8>>();
+        Ok(out)
+    }
+
+    async fn read_http_message(&mut self) -> Result<Option<HttpMessage>> {
+        let start_line_bytes = match self.read_line().await? {
+            Some(line) => line,
+            None => return Ok(None),
+        };
+        if start_line_bytes.is_empty() {
+            return Ok(None);
+        }
+
+        let start_line = String::from_utf8_lossy(&start_line_bytes).to_string();
+        let mut header_lines = Vec::new();
+        let mut content_length = None;
+        let mut chunked = false;
+
+        loop {
+            let line = self.read_line().await?;
+            let Some(line_bytes) = line else {
+                break;
+            };
+            if line_bytes.is_empty() {
+                break;
+            }
+            let line_str = String::from_utf8_lossy(&line_bytes).to_string();
+            let lower = line_str.to_ascii_lowercase();
+            if let Some(rest) = lower.strip_prefix("content-length:") {
+                content_length = rest.trim().parse::<usize>().ok();
+            }
+            if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+                chunked = true;
+            }
+            header_lines.push(line_str);
+        }
+
+        let body = if chunked {
+            let mut out = Vec::new();
+            loop {
+                let size_line_bytes = self
+                    .read_line()
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("unexpected EOF while reading chunk size"))?;
+                let size_line = String::from_utf8_lossy(&size_line_bytes);
+                let size_hex = size_line.trim();
+                let size = usize::from_str_radix(size_hex, 16)
+                    .map_err(|_| anyhow::anyhow!("invalid chunk size: {size_hex}"))?;
+                if size == 0 {
+                    // Trailers, if any, end with an empty line.
+                    loop {
+                        let trailer_line = self
+                            .read_line()
+                            .await?
+                            .ok_or_else(|| anyhow::anyhow!("unexpected EOF in trailers"))?;
+                        if trailer_line.is_empty() {
+                            break;
+                        }
+                    }
+                    break;
+                }
+                let chunk = self.read_exact_bytes(size).await?;
+                out.extend_from_slice(&chunk);
+                let _ = self.read_exact_bytes(2).await?;
+            }
+            out
+        } else if let Some(len) = content_length {
+            if len == 0 {
+                Vec::new()
+            } else {
+                self.read_exact_bytes(len).await?
+            }
+        } else {
+            Vec::new()
+        };
+
+        Ok(Some(HttpMessage {
+            start_line,
+            header_lines,
+            body,
+            chunked,
+        }))
+    }
+}
+
+fn assemble_http_message(
+    start_line: &str,
+    header_lines: &[String],
+    body: &[u8],
+    remove_chunked: bool,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(start_line.as_bytes());
+    out.extend_from_slice(b"\r\n");
+
+    let mut wrote_length = false;
+    for line in header_lines {
+        let lower = line.to_ascii_lowercase();
+        if remove_chunked && lower.starts_with("transfer-encoding:") {
+            continue;
+        }
+        if lower.starts_with("content-length:") {
+            out.extend_from_slice(format!("Content-Length: {}", body.len()).as_bytes());
+            out.extend_from_slice(b"\r\n");
+            wrote_length = true;
+            continue;
+        }
+        out.extend_from_slice(line.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+
+    if !wrote_length {
+        out.extend_from_slice(format!("Content-Length: {}", body.len()).as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(body);
+    out
+}
+
+async fn handle_http_like(
+    cfg: AppConfig,
+    mut inbound: TcpStream,
+    upstream_host: String,
+    upstream_port: u16,
+    kind: &str,
+    rewrite: bool,
+) -> Result<()> {
+    log_debug(
+        &cfg,
+        format!("{kind}: connecting upstream {upstream_host}:{upstream_port}"),
+    );
+    let mut outbound = TcpStream::connect((upstream_host.as_str(), upstream_port))
+        .await
+        .with_context(|| {
+            format!("connecting to upstream {kind} {upstream_host}:{upstream_port}")
+        })?;
+
+    let (in_r, mut in_w) = inbound.split();
+    let (out_r, mut out_w) = outbound.split();
+    let mut in_reader = HttpReader::new(in_r);
+    let mut out_reader = HttpReader::new(out_r);
+
+    loop {
+        let Some(request) = in_reader.read_http_message().await? else {
+            break;
+        };
+        let request_bytes = assemble_http_message(
+            &request.start_line,
+            &request.header_lines,
+            &request.body,
+            request.chunked,
+        );
+        out_w.write_all(&request_bytes).await?;
+
+        let Some(mut response) = out_reader.read_http_message().await? else {
+            break;
+        };
+        let mut body = response.body;
+        if rewrite {
+            let body_text = String::from_utf8_lossy(&body);
+            let rewritten = rewrite_onvif_body(&body_text, &cfg);
+            body = rewritten.into_bytes();
+        }
+
+        let response_bytes = assemble_http_message(
+            &response.start_line,
+            &response.header_lines,
+            &body,
+            response.chunked,
+        );
+        in_w.write_all(&response_bytes).await?;
+    }
+
+    Ok(())
+}
+
 fn build_native_tls_connector() -> Result<NativeTlsConnector> {
     let mut builder = NativeTlsBuilder::builder();
     builder.danger_accept_invalid_certs(true);
@@ -338,40 +572,10 @@ async fn run_http_proxy(cfg: AppConfig) -> Result<()> {
     }
 }
 
-async fn handle_http_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()> {
-    log_debug(
-        &cfg,
-        format!(
-            "HTTP: connecting upstream {}:{}",
-            cfg.upstream_http_host, cfg.upstream_http_port
-        ),
-    );
-    let mut outbound =
-        TcpStream::connect((cfg.upstream_http_host.as_str(), cfg.upstream_http_port))
-            .await
-            .with_context(|| {
-                format!(
-                    "connecting to upstream HTTP {}:{}",
-                    cfg.upstream_http_host, cfg.upstream_http_port
-                )
-            })?;
-
-    log_debug(&cfg, "HTTP: reading request");
-    let mut request = Vec::new();
-    inbound.read_to_end(&mut request).await?;
-    outbound.write_all(&request).await?;
-
-    let mut response = Vec::new();
-    outbound.read_to_end(&mut response).await?;
-
-    if let Some(rewritten) = rewrite_http_response(&response, &cfg) {
-        log_debug(&cfg, "HTTP: response rewritten");
-        inbound.write_all(&rewritten).await?;
-    } else {
-        inbound.write_all(&response).await?;
-    }
-
-    Ok(())
+async fn handle_http_client(cfg: AppConfig, inbound: TcpStream) -> Result<()> {
+    let upstream_host = cfg.upstream_http_host.clone();
+    let upstream_port = cfg.upstream_http_port;
+    handle_http_like(cfg, inbound, upstream_host, upstream_port, "HTTP", true).await
 }
 
 async fn run_onvif_proxy(cfg: AppConfig) -> Result<()> {
@@ -391,27 +595,10 @@ async fn run_onvif_proxy(cfg: AppConfig) -> Result<()> {
     }
 }
 
-async fn handle_onvif_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()> {
-    log_debug(
-        &cfg,
-        format!(
-            "ONVIF: connecting upstream {}:{}",
-            cfg.upstream_onvif_host, cfg.upstream_onvif_port
-        ),
-    );
-    let mut outbound =
-        TcpStream::connect((cfg.upstream_onvif_host.as_str(), cfg.upstream_onvif_port))
-            .await
-            .with_context(|| {
-                format!(
-                    "connecting to upstream ONVIF {}:{}",
-                    cfg.upstream_onvif_host, cfg.upstream_onvif_port
-                )
-            })?;
-
-    log_debug(&cfg, "ONVIF: piping traffic");
-    let _ = copy_bidirectional(&mut inbound, &mut outbound).await?;
-    Ok(())
+async fn handle_onvif_client(cfg: AppConfig, inbound: TcpStream) -> Result<()> {
+    let upstream_host = cfg.upstream_onvif_host.clone();
+    let upstream_port = cfg.upstream_onvif_port;
+    handle_http_like(cfg, inbound, upstream_host, upstream_port, "ONVIF", true).await
 }
 
 async fn run_onvif2_proxy(cfg: AppConfig) -> Result<()> {
@@ -431,27 +618,10 @@ async fn run_onvif2_proxy(cfg: AppConfig) -> Result<()> {
     }
 }
 
-async fn handle_onvif2_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()> {
-    log_debug(
-        &cfg,
-        format!(
-            "ONVIF2: connecting upstream {}:{}",
-            cfg.upstream_onvif2_host, cfg.upstream_onvif2_port
-        ),
-    );
-    let mut outbound =
-        TcpStream::connect((cfg.upstream_onvif2_host.as_str(), cfg.upstream_onvif2_port))
-            .await
-            .with_context(|| {
-                format!(
-                    "connecting to upstream ONVIF2 {}:{}",
-                    cfg.upstream_onvif2_host, cfg.upstream_onvif2_port
-                )
-            })?;
-
-    log_debug(&cfg, "ONVIF2: piping traffic");
-    let _ = copy_bidirectional(&mut inbound, &mut outbound).await?;
-    Ok(())
+async fn handle_onvif2_client(cfg: AppConfig, inbound: TcpStream) -> Result<()> {
+    let upstream_host = cfg.upstream_onvif2_host.clone();
+    let upstream_port = cfg.upstream_onvif2_port;
+    handle_http_like(cfg, inbound, upstream_host, upstream_port, "ONVIF2", true).await
 }
 
 fn rewrite_http_response(buf: &[u8], cfg: &AppConfig) -> Option<Vec<u8>> {
