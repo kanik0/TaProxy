@@ -1041,6 +1041,17 @@ struct UdpSetup {
 }
 
 async fn bind_udp_pair() -> Result<(UdpSocket, UdpSocket)> {
+    for _ in 0..50 {
+        let rtp = UdpSocket::bind("0.0.0.0:0").await?;
+        let port = rtp.local_addr()?.port();
+        if port % 2 != 0 {
+            continue;
+        }
+        let rtcp_addr = format!("0.0.0.0:{}", port + 1);
+        if let Ok(rtcp) = UdpSocket::bind(rtcp_addr).await {
+            return Ok((rtp, rtcp));
+        }
+    }
     let rtp = UdpSocket::bind("0.0.0.0:0").await?;
     let rtcp = UdpSocket::bind("0.0.0.0:0").await?;
     Ok((rtp, rtcp))
