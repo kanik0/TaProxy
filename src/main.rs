@@ -592,6 +592,16 @@ async fn main() -> Result<()> {
         config.upstream_onvif_event_host,
         config.upstream_onvif_event_port
     );
+    println!(
+        "Public endpoints: host={} https={} http={} rtsp={} onvif={} onvif2={} onvif-event={}",
+        config.public_host,
+        config.public_https_port,
+        config.public_http_port,
+        config.public_rtsp_port,
+        config.public_onvif_port,
+        config.public_onvif2_port,
+        config.public_onvif_event_port
+    );
 
     let tls_acceptor = TlsAcceptor::from(Arc::new(generate_tls_server_config()?));
     let native_tls_connector = build_native_tls_connector()?;
