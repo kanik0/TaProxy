@@ -304,6 +304,51 @@ fn log_onvif_tag_values(cfg: &AppConfig, kind: &str, body: &str) {
     }
 }
 
+fn log_body_urls(cfg: &AppConfig, kind: &str, body: &str) {
+    if !cfg.debug {
+        return;
+    }
+    let mut urls = Vec::new();
+    let bytes = body.as_bytes();
+    let schemes = [b"http://", b"https://", b"rtsp://"];
+    let mut i = 0;
+    while i < bytes.len() {
+        let mut matched = None;
+        for scheme in schemes {
+            if bytes[i..].starts_with(scheme) {
+                matched = Some(scheme);
+                break;
+            }
+        }
+        if let Some(scheme) = matched {
+            let start = i;
+            let mut end = i + scheme.len();
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b == b'<' || b == b'"' || b == b'\'' || b == b' ' || b == b'\r' || b == b'\n' {
+                    break;
+                }
+                end += 1;
+            }
+            if end > start {
+                if let Ok(url) = std::str::from_utf8(&bytes[start..end]) {
+                    if !urls.contains(&url.to_string()) {
+                        urls.push(url.to_string());
+                    }
+                }
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+
+    if !urls.is_empty() {
+        let joined = urls.into_iter().take(10).collect::<Vec<_>>().join(" | ");
+        println!("[DEBUG] {kind}: urls = {joined}");
+    }
+}
+
 #[derive(Debug)]
 struct HttpMessage {
     start_line: String,
@@ -541,6 +586,7 @@ async fn handle_http_like(
         if rewrite {
             let body_text = String::from_utf8_lossy(&body);
             log_onvif_tag_values(&cfg, kind, &body_text);
+            log_body_urls(&cfg, kind, &body_text);
             let rewritten = rewrite_onvif_body(&body_text, &cfg);
             log_rewrite_check(
                 &cfg,
