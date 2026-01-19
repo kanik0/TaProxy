@@ -304,6 +304,32 @@ fn log_onvif_tag_values(cfg: &AppConfig, kind: &str, body: &str) {
     }
 }
 
+fn log_onvif_request_actions(cfg: &AppConfig, kind: &str, body: &str) {
+    if !cfg.debug {
+        return;
+    }
+    let actions = [
+        "GetStreamUri",
+        "GetSnapshotUri",
+        "GetProfiles",
+        "GetCapabilities",
+        "GetServices",
+        "CreatePullPointSubscription",
+        "PullMessages",
+        "GetEventProperties",
+    ];
+    let mut found = Vec::new();
+    for action in actions {
+        if body.contains(action) {
+            found.push(action);
+        }
+    }
+    if !found.is_empty() {
+        let joined = found.join(", ");
+        println!("[DEBUG] {kind}: request actions = {joined}");
+    }
+}
+
 fn log_body_urls(cfg: &AppConfig, kind: &str, body: &str) {
     if !cfg.debug {
         return;
@@ -344,7 +370,17 @@ fn log_body_urls(cfg: &AppConfig, kind: &str, body: &str) {
     }
 
     if !urls.is_empty() {
-        let joined = urls.into_iter().take(10).collect::<Vec<_>>().join(" | ");
+        let host_urls = urls
+            .iter()
+            .filter(|u| u.contains(&cfg.upstream_http_host) || u.contains(&cfg.public_host))
+            .cloned()
+            .collect::<Vec<_>>();
+        let list = if !host_urls.is_empty() {
+            host_urls
+        } else {
+            urls.into_iter().take(10).collect()
+        };
+        let joined = list.join(" | ");
         println!("[DEBUG] {kind}: urls = {joined}");
     }
 }
@@ -561,6 +597,10 @@ async fn handle_http_like(
             &request.header_lines,
             request.body.len(),
         );
+        if rewrite {
+            let body_text = String::from_utf8_lossy(&request.body);
+            log_onvif_request_actions(&cfg, kind, &body_text);
+        }
         let request_bytes = assemble_http_message(
             &request.start_line,
             &request.header_lines,
