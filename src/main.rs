@@ -609,7 +609,7 @@ async fn handle_http_like(
         );
         out_w.write_all(&request_bytes).await?;
 
-        let Some(mut response) = out_reader.read_http_message().await? else {
+        let Some(response) = out_reader.read_http_message().await? else {
             break;
         };
         log_http_summary(
@@ -846,6 +846,30 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
                 )
             })?;
 
+    log_debug(&cfg, "RTSP: reading request line");
+    let mut first_line = Vec::new();
+    loop {
+        let mut buf = [0u8; 1];
+        let n = inbound.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        first_line.push(buf[0]);
+        if first_line.ends_with(b"\r\n") {
+            break;
+        }
+        if first_line.len() > 4096 {
+            break;
+        }
+    }
+
+    if !first_line.is_empty() {
+        let line = String::from_utf8_lossy(&first_line);
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        log_debug(&cfg, format!("RTSP: request line: {trimmed}"));
+        outbound.write_all(&first_line).await?;
+    }
+
     log_debug(&cfg, "RTSP: piping traffic");
     let _ = copy_bidirectional(&mut inbound, &mut outbound).await?;
     Ok(())
@@ -949,46 +973,6 @@ async fn handle_onvif_event_client(cfg: AppConfig, inbound: TcpStream) -> Result
         true,
     )
     .await
-}
-
-fn rewrite_http_response(buf: &[u8], cfg: &AppConfig) -> Option<Vec<u8>> {
-    let text = String::from_utf8_lossy(buf);
-    let split = text.split_once("\r\n\r\n")?;
-    let (head, body) = split;
-    let mut content_length: Option<usize> = None;
-    let mut headers = Vec::new();
-
-    for line in head.lines() {
-        if let Some(rest) = line.strip_prefix("Content-Length:") {
-            content_length = rest.trim().parse::<usize>().ok();
-        }
-        headers.push(line);
-    }
-
-    let new_body = rewrite_onvif_body(body, cfg);
-    if let Some(len) = content_length {
-        if len != body.len() {
-            // Only rewrite when lengths match expected body; otherwise, fallback
-            if len != body.as_bytes().len() {
-                return None;
-            }
-        }
-    }
-
-    let mut new_headers = Vec::new();
-    for line in headers {
-        if line.starts_with("Content-Length:") {
-            new_headers.push(format!("Content-Length: {}", new_body.len()));
-        } else {
-            new_headers.push(line.to_string());
-        }
-    }
-
-    let mut out = String::new();
-    out.push_str(&new_headers.join("\r\n"));
-    out.push_str("\r\n\r\n");
-    out.push_str(&new_body);
-    Some(out.into_bytes())
 }
 
 fn rewrite_onvif_body(body: &str, cfg: &AppConfig) -> String {
