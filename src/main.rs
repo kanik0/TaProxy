@@ -26,6 +26,7 @@ struct AppConfig {
     onvif_bind: SocketAddr,
     http_bind: SocketAddr,
     onvif2_bind: SocketAddr,
+    onvif_event_bind: SocketAddr,
     upstream_https_host: String,
     upstream_https_port: u16,
     upstream_rtsp_host: String,
@@ -36,12 +37,15 @@ struct AppConfig {
     upstream_http_port: u16,
     upstream_onvif2_host: String,
     upstream_onvif2_port: u16,
+    upstream_onvif_event_host: String,
+    upstream_onvif_event_port: u16,
     public_host: String,
     public_https_port: u16,
     public_http_port: u16,
     public_rtsp_port: u16,
     public_onvif_port: u16,
     public_onvif2_port: u16,
+    public_onvif_event_port: u16,
     debug: bool,
 }
 
@@ -67,6 +71,10 @@ impl AppConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1024);
+        let onvif_event_bind_port = env::var("ONVIF_EVENT_LISTEN_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1025);
 
         let upstream_host = env::var("UPSTREAM_HOST").unwrap_or_else(|_| "10.66.0.201".to_string());
         let upstream_https_port = env::var("UPSTREAM_HTTPS_PORT")
@@ -89,6 +97,10 @@ impl AppConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1024);
+        let upstream_onvif_event_port = env::var("UPSTREAM_ONVIF_EVENT_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1025);
 
         let public_host = env::var("PUBLIC_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
         let public_https_port = env::var("PUBLIC_HTTPS_PORT")
@@ -111,6 +123,10 @@ impl AppConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(onvif2_bind_port);
+        let public_onvif_event_port = env::var("PUBLIC_ONVIF_EVENT_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(onvif_event_bind_port);
 
         let debug = env::var("PROXY_DEBUG")
             .ok()
@@ -124,6 +140,10 @@ impl AppConfig {
             onvif_bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), onvif_bind_port),
             http_bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), http_bind_port),
             onvif2_bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), onvif2_bind_port),
+            onvif_event_bind: SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                onvif_event_bind_port,
+            ),
             upstream_https_host: upstream_host.clone(),
             upstream_https_port,
             upstream_rtsp_host: upstream_host.clone(),
@@ -132,14 +152,17 @@ impl AppConfig {
             upstream_onvif_port,
             upstream_http_host: upstream_host.clone(),
             upstream_http_port,
-            upstream_onvif2_host: upstream_host,
+            upstream_onvif2_host: upstream_host.clone(),
             upstream_onvif2_port,
+            upstream_onvif_event_host: upstream_host,
+            upstream_onvif_event_port,
             public_host,
             public_https_port,
             public_http_port,
             public_rtsp_port,
             public_onvif_port,
             public_onvif2_port,
+            public_onvif_event_port,
             debug,
         })
     }
@@ -517,7 +540,7 @@ fn generate_tls_server_config() -> Result<ServerConfig> {
 async fn main() -> Result<()> {
     let config = AppConfig::from_env()?;
     println!(
-        "Starting proxy: HTTPS {} -> {}:{} | RTSP {} -> {}:{} | ONVIF {} -> {}:{} | HTTP {} -> {}:{} | ONVIF2 {} -> {}:{}",
+        "Starting proxy: HTTPS {} -> {}:{} | RTSP {} -> {}:{} | ONVIF {} -> {}:{} | HTTP {} -> {}:{} | ONVIF2 {} -> {}:{} | ONVIF-EVENT {} -> {}:{}",
         config.https_bind,
         config.upstream_https_host,
         config.upstream_https_port,
@@ -532,7 +555,10 @@ async fn main() -> Result<()> {
         config.upstream_http_port,
         config.onvif2_bind,
         config.upstream_onvif2_host,
-        config.upstream_onvif2_port
+        config.upstream_onvif2_port,
+        config.onvif_event_bind,
+        config.upstream_onvif_event_host,
+        config.upstream_onvif_event_port
     );
 
     let tls_acceptor = TlsAcceptor::from(Arc::new(generate_tls_server_config()?));
@@ -547,16 +573,25 @@ async fn main() -> Result<()> {
     let onvif_task = tokio::spawn(run_onvif_proxy(config.clone()));
     let http_task = tokio::spawn(run_http_proxy(config.clone()));
     let onvif2_task = tokio::spawn(run_onvif2_proxy(config.clone()));
+    let onvif_event_task = tokio::spawn(run_onvif_event_proxy(config.clone()));
 
-    match tokio::try_join!(https_task, rtsp_task, onvif_task, http_task, onvif2_task) {
-        Ok((Ok(_), Ok(_), Ok(_), Ok(_), Ok(_))) => Ok(()),
-        Ok((Err(e), _, _, _, _))
-        | Ok((_, Err(e), _, _, _))
-        | Ok((_, _, Err(e), _, _))
-        | Ok((_, _, _, Err(e), _))
-        | Ok((_, _, _, _, Err(e))) => Err(e),
-        Err(join_err) => Err(anyhow::anyhow!("Task join error: {join_err}")),
-    }
+    let (https_res, rtsp_res, onvif_res, http_res, onvif2_res, onvif_event_res) = tokio::try_join!(
+        https_task,
+        rtsp_task,
+        onvif_task,
+        http_task,
+        onvif2_task,
+        onvif_event_task
+    )
+    .map_err(|join_err| anyhow::anyhow!("Task join error: {join_err}"))?;
+
+    https_res?;
+    rtsp_res?;
+    onvif_res?;
+    http_res?;
+    onvif2_res?;
+    onvif_event_res?;
+    Ok(())
 }
 
 async fn run_https_proxy(
@@ -730,6 +765,37 @@ async fn handle_onvif2_client(cfg: AppConfig, inbound: TcpStream) -> Result<()> 
     handle_http_like(cfg, inbound, upstream_host, upstream_port, "ONVIF2", true).await
 }
 
+async fn run_onvif_event_proxy(cfg: AppConfig) -> Result<()> {
+    let listener = TcpListener::bind(cfg.onvif_event_bind)
+        .await
+        .with_context(|| format!("binding ONVIF-EVENT listener on {}", cfg.onvif_event_bind))?;
+    println!("ONVIF-EVENT proxy listening on {}", cfg.onvif_event_bind);
+
+    loop {
+        let (socket, peer) = listener.accept().await?;
+        let cfg_clone = cfg.clone();
+        tokio::spawn(async move {
+            if let Err(err) = handle_onvif_event_client(cfg_clone, socket).await {
+                eprintln!("[ONVIF-EVENT] client {peer}: {err:?}");
+            }
+        });
+    }
+}
+
+async fn handle_onvif_event_client(cfg: AppConfig, inbound: TcpStream) -> Result<()> {
+    let upstream_host = cfg.upstream_onvif_event_host.clone();
+    let upstream_port = cfg.upstream_onvif_event_port;
+    handle_http_like(
+        cfg,
+        inbound,
+        upstream_host,
+        upstream_port,
+        "ONVIF-EVENT",
+        true,
+    )
+    .await
+}
+
 fn rewrite_http_response(buf: &[u8], cfg: &AppConfig) -> Option<Vec<u8>> {
     let text = String::from_utf8_lossy(buf);
     let split = text.split_once("\r\n\r\n")?;
@@ -819,6 +885,13 @@ fn rewrite_onvif_body(body: &str, cfg: &AppConfig) -> String {
     );
     let public_onvif2 = format!("http://{}:{}", cfg.public_host, cfg.public_onvif2_port);
     out = out.replace(&upstream_onvif2, &public_onvif2);
+
+    let upstream_onvif_event = format!(
+        "http://{}:{}",
+        cfg.upstream_onvif_event_host, cfg.upstream_onvif_event_port
+    );
+    let public_onvif_event = format!("http://{}:{}", cfg.public_host, cfg.public_onvif_event_port);
+    out = out.replace(&upstream_onvif_event, &public_onvif_event);
 
     // Also replace bare hosts if present without ports
     out = out.replace(&cfg.upstream_http_host, &cfg.public_host);
