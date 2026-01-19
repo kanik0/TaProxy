@@ -310,7 +310,7 @@ fn log_body_urls(cfg: &AppConfig, kind: &str, body: &str) {
     }
     let mut urls = Vec::new();
     let bytes = body.as_bytes();
-    let schemes = [b"http://", b"https://", b"rtsp://"];
+    let schemes: [&[u8]; 3] = [b"http://", b"https://", b"rtsp://"];
     let mut i = 0;
     while i < bytes.len() {
         let mut matched = None;
