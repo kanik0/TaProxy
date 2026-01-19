@@ -855,12 +855,23 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             break;
         };
 
-        let request_lines = split_rtsp_lines(&request_buf);
+        let mut request_lines = split_rtsp_lines(&request_buf);
         if let Some(line) = request_lines.first() {
             log_debug(&cfg, format!("RTSP: request line: {line}"));
         }
+        let method = request_lines
+            .first()
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or_default()
+            .to_string();
+
+        if method.eq_ignore_ascii_case("SETUP") {
+            rewrite_rtsp_transport_to_tcp(&mut request_lines);
+        }
+
         log_rtsp_headers(&cfg, "request", &request_lines);
-        outbound.write_all(&request_buf).await?;
+        let rebuilt_request = join_rtsp_lines(&request_lines);
+        outbound.write_all(&rebuilt_request).await?;
 
         log_debug(&cfg, "RTSP: reading response headers");
         let response_buf = read_rtsp_headers(&mut outbound, 16384).await?;
@@ -872,11 +883,6 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             log_debug(&cfg, format!("RTSP: response line: {line}"));
         }
         log_rtsp_headers(&cfg, "response", &response_lines);
-
-        let method = request_lines
-            .first()
-            .and_then(|line| line.split_whitespace().next())
-            .unwrap_or_default();
 
         let (content_length, has_content_base) = extract_rtsp_response_info(&response_lines);
         if let Some(len) = content_length {
@@ -907,6 +913,25 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
     log_debug(&cfg, "RTSP: piping traffic");
     let _ = copy_bidirectional(&mut inbound, &mut outbound).await?;
     Ok(())
+}
+
+fn rewrite_rtsp_transport_to_tcp(lines: &mut [String]) {
+    let mut next_interleaved = 0;
+    for line in lines.iter_mut() {
+        if line.to_ascii_lowercase().starts_with("transport:") {
+            let mut new_line = String::from("Transport: RTP/AVP/TCP;unicast;interleaved=");
+            new_line.push_str(&format!("{}-{}", next_interleaved, next_interleaved + 1));
+            *line = new_line;
+            next_interleaved += 2;
+        }
+    }
+}
+
+fn join_rtsp_lines(lines: &[String]) -> Vec<u8> {
+    let mut out = String::new();
+    out.push_str(&lines.join("\r\n"));
+    out.push_str("\r\n\r\n");
+    out.into_bytes()
 }
 
 fn extract_rtsp_response_info(lines: &[String]) -> (Option<usize>, bool) {
