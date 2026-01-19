@@ -63,7 +63,10 @@ impl AppConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1025);
 
-        let upstream_host = env::var("UPSTREAM_HOST").unwrap_or_else(|_| "10.66.0.201".to_string());
+        let upstream_host = env::var("UPSTREAM_HOST")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("UPSTREAM_HOST is required"))?;
         let upstream_https_port = env::var("UPSTREAM_HTTPS_PORT")
             .ok()
             .and_then(|v| v.parse().ok())

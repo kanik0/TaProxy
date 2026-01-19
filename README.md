@@ -1,6 +1,6 @@
 # Tapo Multi-Protocol Proxy
 
-A Rust proxy that fronts a TP-Link Tapo camera for Homebridge/HomeKit by forwarding multiple protocols (HTTPS, RTSP, ONVIF, HTTP) from local ports to the camera. It terminates TLS on the front-end, proxies ONVIF/HTTP, rewrites ONVIF URLs to public endpoints, and supports RTSP over TCP or UDP (with UDP relay).
+A Rust proxy that fronts a TP-Link Tapo camera for Homebridge/HomeKit by forwarding multiple protocols (HTTPS, RTSP, ONVIF, HTTP) from local ports to the camera. It exists because newer Tapo firmware ships with legacy certificates that can break Homebridge plugins and Home Assistant. The proxy terminates TLS with a secure certificate on port 443, proxies ONVIF/HTTP, rewrites ONVIF URLs to public endpoints, and supports RTSP over TCP or UDP (with UDP relay).
 
 ## Features
 
@@ -16,6 +16,7 @@ A Rust proxy that fronts a TP-Link Tapo camera for Homebridge/HomeKit by forward
 - Homebridge: set the video codec to `libx264`.
   - The default `copy` codec can fail to stream in HomeKit for some clients.
   - Snapshot works without changes, but streaming requires `libx264` in this setup.
+ - Tested with Homebridge + `homebridge-tapo-camera`.
 
 ## Build
 
@@ -37,7 +38,7 @@ cargo run
 
 ## Configuration (Environment Variables)
 
-- `UPSTREAM_HOST` (default `10.66.0.201`)
+- `UPSTREAM_HOST` (required)
 - `UPSTREAM_HTTPS_PORT` (default `443`)
 - `UPSTREAM_RTSP_PORT` (default `554`)
 - `UPSTREAM_ONVIF_PORT` (default `2020`)
