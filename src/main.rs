@@ -905,6 +905,9 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             } else {
                 (response_buf.clone(), body)
             };
+            if method.eq_ignore_ascii_case("DESCRIBE") {
+                log_rtsp_rewrite(&cfg, &rewritten_head, &rewritten_body);
+            }
             inbound.write_all(&rewritten_head).await?;
             inbound.write_all(&rewritten_body).await?;
         } else {
@@ -913,6 +916,9 @@ async fn handle_rtsp_client(cfg: AppConfig, mut inbound: TcpStream) -> Result<()
             } else {
                 response_buf
             };
+            if method.eq_ignore_ascii_case("DESCRIBE") {
+                log_rtsp_rewrite(&cfg, &rewritten_head, &[]);
+            }
             inbound.write_all(&rewritten_head).await?;
         }
 
@@ -1045,6 +1051,26 @@ fn rewrite_rtsp_body(body: &[u8], cfg: &AppConfig) -> Vec<u8> {
         .replace(&upstream, &public)
         .replace(&upstream_any_port, &public_any_port);
     rewritten.into_bytes()
+}
+
+fn log_rtsp_rewrite(cfg: &AppConfig, head: &[u8], body: &[u8]) {
+    if !cfg.debug {
+        return;
+    }
+    let head_text = String::from_utf8_lossy(head);
+    for line in head_text.split("\r\n") {
+        if line.to_ascii_lowercase().starts_with("content-base:") {
+            log_debug(cfg, format!("RTSP: rewritten Content-Base: {line}"));
+        }
+    }
+    if !body.is_empty() {
+        let body_text = String::from_utf8_lossy(body);
+        for line in body_text.lines() {
+            if line.starts_with("a=control:") {
+                log_debug(cfg, format!("RTSP: SDP control: {line}"));
+            }
+        }
+    }
 }
 
 async fn read_exact_from_stream(stream: &mut TcpStream, len: usize) -> Result<Vec<u8>> {
