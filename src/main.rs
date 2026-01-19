@@ -253,6 +253,31 @@ fn log_body_url(cfg: &AppConfig, kind: &str, body: &[u8]) {
     }
 }
 
+fn log_rewrite_check(cfg: &AppConfig, kind: &str, original: &str, rewritten: &str, upstream: &str) {
+    if !cfg.debug {
+        return;
+    }
+    if original == rewritten {
+        if let Some(idx) = original.find(upstream) {
+            let start = idx.saturating_sub(40);
+            let end = (idx + upstream.len() + 120).min(original.len());
+            let snippet = &original[start..end];
+            let sanitized = snippet.replace('\r', "\\r").replace('\n', "\\n");
+            println!("[DEBUG] {kind}: rewrite unchanged, upstream still present: {sanitized}");
+        }
+    } else {
+        if let Some(idx) = rewritten.find(upstream) {
+            let start = idx.saturating_sub(40);
+            let end = (idx + upstream.len() + 120).min(rewritten.len());
+            let snippet = &rewritten[start..end];
+            let sanitized = snippet.replace('\r', "\\r").replace('\n', "\\n");
+            println!("[DEBUG] {kind}: rewrite still contains upstream: {sanitized}");
+        } else {
+            println!("[DEBUG] {kind}: rewrite removed upstream host references");
+        }
+    }
+}
+
 #[derive(Debug)]
 struct HttpMessage {
     start_line: String,
@@ -490,6 +515,13 @@ async fn handle_http_like(
         if rewrite {
             let body_text = String::from_utf8_lossy(&body);
             let rewritten = rewrite_onvif_body(&body_text, &cfg);
+            log_rewrite_check(
+                &cfg,
+                kind,
+                &body_text,
+                &rewritten,
+                cfg.upstream_http_host.as_str(),
+            );
             if rewritten.as_bytes() != body.as_slice() {
                 log_debug(&cfg, format!("{kind}: response body rewritten"));
             }
